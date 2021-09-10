@@ -24,9 +24,9 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 const (
-  MapTask = "MapTask"
-  ReduceTask = "ReduceTask"
-  NoTask = "NoTask"
+	MapTask    = "MapTask"
+	ReduceTask = "ReduceTask"
+	NoTask     = "NoTask"
 )
 
 type AssignTaskArgs struct {
@@ -34,17 +34,17 @@ type AssignTaskArgs struct {
 }
 
 type AssignTaskReply struct {
-	TaskNo int
-	Files []string
+	TaskNo   int
+	Files    []string
 	TaskType string
-	NOut int
+	NOut     int
 }
 
 type TaskCompletionArgs struct {
-  WorkerID int
-  TaskNo int
-  TaskType string
-  OFiles []string
+	WorkerID int
+	TaskNo   int
+	TaskType string
+	OFiles   []string
 }
 
 type TaskCompletionReply struct {

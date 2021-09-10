@@ -20,11 +20,11 @@ package raft
 import "sync"
 import "sync/atomic"
 import "../labrpc"
+import "time"
+import "math/rand"
 
 // import "bytes"
 // import "../labgob"
-
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -43,6 +43,21 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type RaftStatus int
+
+const (
+	Follower  RaftStatus = iota // 0
+	Candidate                  // 1
+	Leader                     // 2
+)
+
+const (
+	heartbeatInterval    = 110 * time.Millisecond
+	electionTimeoutBase  = 330 * time.Millisecond
+	electionTimeoutScale = 150 // TODO: use time.Duration instead
+	sleepInterval        = 5 * time.Millisecond
+)
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -56,7 +71,11 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-
+	status          RaftStatus
+	currentTerm     int
+	votedFor        int
+	lastHeartbeat   time.Time
+	electionTimeout time.Duration
 }
 
 // return currentTerm and whether this server
@@ -85,7 +104,6 @@ func (rf *Raft) persist() {
 	// rf.persister.SaveRaftState(data)
 }
 
-
 //
 // restore previously persisted state.
 //
@@ -108,15 +126,14 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term        int
+	CandidateId int
 }
 
 //
@@ -125,6 +142,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -132,6 +151,28 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	// DPrintf("[RequestVote]received args: %v\n", args)
+    rf.mu.Lock()
+    defer rf.mu.Unlock()
+    switch {
+    case args.Term > rf.currentTerm:
+        rf.currentTerm = args.Term
+        rf.votedFor = args.CandidateId
+        reply.VoteGranted = true
+        reply.Term = args.Term
+    case args.Term == rf.currentTerm:
+        if rf.votedFor == -1 || rf.votedFor == args.CandidateId {
+            rf.votedFor = args.CandidateId
+            reply.VoteGranted = true
+        } else {
+            reply.VoteGranted = false
+        }
+        reply.Term = args.Term
+    case args.Term < rf.currentTerm:
+        reply.VoteGranted = false
+        reply.Term = rf.currentTerm
+    }
+
 }
 
 //
@@ -168,6 +209,51 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
+func (rf *Raft) handleElection() {
+	for !rf.killed() {
+		if time.Since(rf.lastHeartbeat) >= rf.electionTimeout {
+            count, finished := 0, 0
+            total := len(rf.peers) 
+            threshold := (total + 1) / 2 // ceil(total / 2)
+            cond := sync.NewCond(&rf.mu)
+			for i := range rf.peers {
+				if i == rf.me {
+					continue
+				}
+                go func() {
+				    args := &RequestVoteArgs{Term: rf.currentTerm + 1, CandidateId: rf.me}
+                    reply := &RequestVoteReply{}
+                    ok := rf.sendRequestVote(i, args, reply)
+                    rf.mu.Lock()
+                    defer rf.mu.Unlock()
+                    if ok {
+                        finished ++
+                        if reply.VoteGranted {
+                            count ++
+                        }
+                    }
+                    cond.Broadcast()
+                }()
+			}
+
+            // use count and finished to determine vote result
+            rf.mu.Lock()
+            for count < threshold && finished != total {
+               cond.Wait() 
+            }
+
+            if count >= threshold {
+                DPrintf("%v wins with (at least) %v votes", rf.me, count)
+            } else {
+                DPrintf("%v loses", rf.me)
+            }
+
+            rf.mu.Unlock()
+		}
+		time.Sleep(sleepInterval)
+	}
+
+}
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -189,7 +275,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -234,10 +319,21 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here (2A, 2B, 2C).
+	rf.status = Follower
+    rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.lastHeartbeat = time.Now()
+	rf.electionTimeout = generateRandomTimeout()
+	// DPrintf("%v electionTimeout: %v", me, rf.electionTimeout)
+
+	go rf.handleElection()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-
 	return rf
+}
+
+func generateRandomTimeout() time.Duration {
+	return electionTimeoutBase + time.Duration(rand.Float32()*electionTimeoutScale)*time.Millisecond
 }
